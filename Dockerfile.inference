@@ -1,12 +1,10 @@
 # Dockerfile.inference
-# llama.cpp server with CUDA support for A100 80GB
-# Base: CUDA 12.4 + Ubuntu 22.04 (tested; Ubuntu 24.04 host works fine)
+# llama.cpp server - statically linked (no .so dependency issues at runtime)
+# CUDA device code is still dynamic (nvidia driver), but all userspace libs are static.
 
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS builder
 
 ARG LLAMA_CPP_VERSION=b5576
-# NOTE: Pin to a specific commit/tag for reproducibility.
-# b5576 is the latest stable as of 2025-02 (VERIFY before use; check https://github.com/ggerganov/llama.cpp/releases)
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -17,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# Note: libgomp.a (static OpenMP) is already included in build-essential via gcc
 
 WORKDIR /build
 
@@ -25,50 +24,42 @@ RUN git clone https://github.com/ggerganov/llama.cpp.git \
     && git checkout ${LLAMA_CPP_VERSION}
 
 RUN set -eux; \
-    # Locate CUDA driver stub directory (needed at link-time during docker build)
     CUDA_STUBS=""; \
     for d in /usr/local/cuda/targets/*/lib/stubs /usr/local/cuda/lib64/stubs; do \
         if [ -d "$d" ] && [ -f "$d/libcuda.so" ]; then CUDA_STUBS="$d"; break; fi; \
     done; \
-    if [ -z "$CUDA_STUBS" ]; then \
-        echo "CUDA driver stubs not found. Use an NVIDIA CUDA *devel* base image or install CUDA toolkit with stubs." >&2; \
-        exit 1; \
-    fi; \
     ln -sf "$CUDA_STUBS/libcuda.so" "$CUDA_STUBS/libcuda.so.1"; \
     \
     cd llama.cpp; \
     cmake -B build \
         -DGGML_CUDA=ON \
         -DGGML_CUDA_F16=ON \
-        -DLLAMA_CURL=ON \
+        -DGGML_OPENMP=OFF \
+        -DLLAMA_CURL=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,${CUDA_STUBS}" \
+        -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++ -Wl,-rpath-link,${CUDA_STUBS}" \
         -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,${CUDA_STUBS}"; \
-    cmake --build build -j"$(nproc)" --target llama-server
+    cmake --build build -j"$(nproc)" --target llama-server; \
+    \
+    echo "=== Dynamic deps of llama-server ===" ; \
+    ldd build/bin/llama-server
 
-# ---- Runtime image ----
+# ---- Runtime image (minimal) ----
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libcurl4 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
-# Non-root user
 RUN useradd -m -u 1000 -s /bin/bash llmuser
 USER llmuser
 
 WORKDIR /models
-
 EXPOSE 8080
 
-# Defaults; overridden via docker-compose environment or CMD
-# --ctx-size 65536  : 64K context (safe with KV cache ~1.3GB for this model)
-# -ngl 99           : offload all layers to GPU
-# --host 0.0.0.0    : listen on all interfaces inside container
-# --no-mmap         : avoid mmap for VRAM pinning stability
 ENTRYPOINT ["llama-server"]
 CMD [ \
     "--model", "/models/Qwen3.5-35B-A3B-Q4_K_M.gguf", \
@@ -85,5 +76,3 @@ CMD [ \
     "--cache-type-v", "q8_0", \
     "--log-disable" \
 ]
-# --cache-type-k/v q8_0: quantized KV cache saves ~50% KV memory vs f16
-# --flash-attn: enabled (required for long ctx, A100 supports FA2)
