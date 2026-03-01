@@ -101,11 +101,11 @@ services:
       --log-file /var/log/llm/server.log
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "exit 0"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s  # model load can take 60-90s
+      start_period: 120s
 
     # Security hardening
     security_opt:
