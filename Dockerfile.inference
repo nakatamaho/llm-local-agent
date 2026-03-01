@@ -24,12 +24,27 @@ RUN git clone https://github.com/ggerganov/llama.cpp.git \
     && cd llama.cpp \
     && git checkout ${LLAMA_CPP_VERSION}
 
-RUN cd llama.cpp && cmake -B build \
-    -DGGML_CUDA=ON \
-    -DLLAMA_CURL=ON \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DGGML_CUDA_F16=ON \
-    && cmake --build build --config Release -j$(nproc) --target llama-server
+RUN set -eux; \
+    # Locate CUDA driver stub directory (needed at link-time during docker build)
+    CUDA_STUBS=""; \
+    for d in /usr/local/cuda/targets/*/lib/stubs /usr/local/cuda/lib64/stubs; do \
+        if [ -d "$d" ] && [ -f "$d/libcuda.so" ]; then CUDA_STUBS="$d"; break; fi; \
+    done; \
+    if [ -z "$CUDA_STUBS" ]; then \
+        echo "CUDA driver stubs not found. Use an NVIDIA CUDA *devel* base image or install CUDA toolkit with stubs." >&2; \
+        exit 1; \
+    fi; \
+    ln -sf "$CUDA_STUBS/libcuda.so" "$CUDA_STUBS/libcuda.so.1"; \
+    \
+    cd llama.cpp; \
+    cmake -B build \
+        -DGGML_CUDA=ON \
+        -DGGML_CUDA_F16=ON \
+        -DLLAMA_CURL=ON \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,${CUDA_STUBS}" \
+        -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,${CUDA_STUBS}"; \
+    cmake --build build -j"$(nproc)" --target llama-server
 
 # ---- Runtime image ----
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04

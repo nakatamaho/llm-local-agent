@@ -5,7 +5,8 @@
 FROM python:3.12-slim-bookworm
 
 ARG AIDER_VERSION=0.85.2
-# Pin version. Check: https://pypi.org/project/aider-chat/#history
+# Pinned delta (git diff pager) version from upstream releases
+ARG DELTA_VERSION=0.18.2
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -14,13 +15,32 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    git-delta \
     universal-ctags \
     ripgrep \
     patch \
     curl \
+    ca-certificates \
     build-essential \
+    gzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install delta (syntax-highlighting pager for git/diff output).
+# Debian bookworm does not ship the "git-delta" package, so install the official release tarball.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+        amd64) target="x86_64-unknown-linux-gnu" ;; \
+        arm64) target="aarch64-unknown-linux-gnu" ;; \
+        armhf) target="arm-unknown-linux-gnueabihf" ;; \
+        i386)  target="i686-unknown-linux-gnu" ;; \
+        *) echo "Unsupported architecture for delta: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${target}.tar.gz"; \
+    curl -fsSL "${url}" -o /tmp/delta.tar.gz; \
+    tar -C /tmp -xzf /tmp/delta.tar.gz; \
+    install -m 0755 "/tmp/delta-${DELTA_VERSION}-${target}/delta" /usr/local/bin/delta; \
+    rm -rf /tmp/delta*; \
+    delta --version
 
 # Install aider at pinned version
 RUN pip install --no-cache-dir "aider-chat==${AIDER_VERSION}"
