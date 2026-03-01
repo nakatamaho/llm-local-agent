@@ -2,7 +2,6 @@ model: openai/Qwen3.5-35B-A3B
 edit-format: diff
 map-tokens: 4096
 map-refresh: auto
-max-context-tokens: 60000
 auto-commits: true
 pretty: true
 dark-mode: true

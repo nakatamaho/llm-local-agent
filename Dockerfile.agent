@@ -43,7 +43,7 @@ RUN set -eux; \
     delta --version
 
 # Install aider at pinned version
-RUN pip install --no-cache-dir "aider-chat==${AIDER_VERSION}"
+RUN pip install --no-cache-dir "aider-chat==${AIDER_VERSION}" "pydantic>=2.7.4,<3.0" "litellm>=1.52.0,<2.0"
 
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash agentuser
