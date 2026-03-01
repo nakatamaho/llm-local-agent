@@ -1,0 +1,74 @@
+# Dockerfile.inference
+# llama.cpp server with CUDA support for A100 80GB
+# Base: CUDA 12.4 + Ubuntu 22.04 (tested; Ubuntu 24.04 host works fine)
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS builder
+
+ARG LLAMA_CPP_VERSION=b5576
+# NOTE: Pin to a specific commit/tag for reproducibility.
+# b5576 is the latest stable as of 2025-02 (VERIFY before use; check https://github.com/ggerganov/llama.cpp/releases)
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    cmake \
+    build-essential \
+    libcurl4-openssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN git clone https://github.com/ggerganov/llama.cpp.git \
+    && cd llama.cpp \
+    && git checkout ${LLAMA_CPP_VERSION}
+
+RUN cd llama.cpp && cmake -B build \
+    -DGGML_CUDA=ON \
+    -DLLAMA_CURL=ON \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_CUDA_F16=ON \
+    && cmake --build build --config Release -j$(nproc) --target llama-server
+
+# ---- Runtime image ----
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcurl4 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+
+# Non-root user
+RUN useradd -m -u 1000 -s /bin/bash llmuser
+USER llmuser
+
+WORKDIR /models
+
+EXPOSE 8080
+
+# Defaults; overridden via docker-compose environment or CMD
+# --ctx-size 65536  : 64K context (safe with KV cache ~1.3GB for this model)
+# -ngl 99           : offload all layers to GPU
+# --host 0.0.0.0    : listen on all interfaces inside container
+# --no-mmap         : avoid mmap for VRAM pinning stability
+ENTRYPOINT ["llama-server"]
+CMD [ \
+    "--model", "/models/Qwen3.5-35B-A3B-Q4_K_M.gguf", \
+    "--host", "0.0.0.0", \
+    "--port", "8080", \
+    "-ngl", "99", \
+    "--ctx-size", "65536", \
+    "--batch-size", "512", \
+    "--ubatch-size", "256", \
+    "--n-predict", "-1", \
+    "--threads", "8", \
+    "--flash-attn", \
+    "--cache-type-k", "q8_0", \
+    "--cache-type-v", "q8_0", \
+    "--log-disable" \
+]
+# --cache-type-k/v q8_0: quantized KV cache saves ~50% KV memory vs f16
+# --flash-attn: enabled (required for long ctx, A100 supports FA2)

@@ -1,0 +1,202 @@
+# docker-compose.yml
+# Offline LLM coding agent stack: llama-server + aider
+# Network: internal-only (no internet access from containers)
+# Tested: Docker Compose v2.x, NVIDIA Container Toolkit >= 1.14
+
+name: llm-local-agent
+
+networks:
+  # internal=true: no routing to host's external interfaces
+  # Containers can only reach each other via this network
+  llm-internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PROJECT_ROOT:-.}/models
+
+  workspace:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WORKSPACE_PATH:-./workspace}
+
+  logs-inference:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PROJECT_ROOT:-.}/logs/inference
+
+  logs-agent:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PROJECT_ROOT:-.}/logs/agent
+
+services:
+  # ── Inference server (llama.cpp with CUDA) ──────────────────────────────
+  inference:
+    build:
+      context: .
+      dockerfile: Dockerfile.inference
+      args:
+        LLAMA_CPP_VERSION: ${LLAMA_CPP_VERSION:-b5576}
+    image: llm-local-agent/inference:${LLAMA_CPP_VERSION:-b5576}
+    container_name: llm-inference
+    restart: unless-stopped
+
+    networks:
+      llm-internal:
+        ipv4_address: 172.30.0.10
+
+    # GPU access: all capabilities, device 0 only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+    volumes:
+      - models:/models:ro            # model files: READ-ONLY
+      - logs-inference:/var/log/llm  # logs: read-write
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # llama-server picks these up if set, but we pass via CMD
+      - LLAMA_CTX_SIZE=${LLAMA_CTX_SIZE:-65536}
+
+    # Override CMD to use env vars:
+    command: >
+      llama-server
+      --model /models/${MODEL_FILE:-Qwen3.5-35B-A3B-Q4_K_M.gguf}
+      --host 0.0.0.0
+      --port 8080
+      -ngl 99
+      --ctx-size ${LLAMA_CTX_SIZE:-65536}
+      --batch-size ${LLAMA_BATCH_SIZE:-512}
+      --ubatch-size 256
+      --n-predict -1
+      --threads 8
+      --flash-attn
+      --cache-type-k q8_0
+      --cache-type-v q8_0
+      --temp ${LLM_TEMPERATURE:-0.6}
+      --top-p ${LLM_TOP_P:-0.95}
+      --min-p 0.0
+      --repeat-penalty 1.0
+      --no-mmap
+      --log-file /var/log/llm/server.log
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # model load can take 60-90s
+
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    read_only: false   # llama-server needs /tmp; set true + tmpfs if desired
+    tmpfs:
+      - /tmp:size=512m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+        compress: "true"
+
+  # ── Agent CLI (aider) ────────────────────────────────────────────────────
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+      args:
+        AIDER_VERSION: ${AIDER_VERSION:-0.85.2}
+    image: llm-local-agent/agent:${AIDER_VERSION:-0.85.2}
+    container_name: llm-agent
+    restart: "no"   # run interactively; don't auto-restart
+
+    depends_on:
+      inference:
+        condition: service_healthy
+
+    networks:
+      llm-internal:
+        ipv4_address: 172.30.0.20
+
+    volumes:
+      - workspace:/workspace:rw         # target repo: read-write (for patches)
+      - logs-agent:/home/agentuser/.aider/logs:rw
+      # Mount aider config (read-only from host)
+      - ./config/aider.conf.yml:/home/agentuser/.aider.conf.yml:ro
+
+    environment:
+      # Point aider to our local llama-server (OpenAI-compatible)
+      - OPENAI_API_BASE=http://172.30.0.10:8080/v1
+      - OPENAI_API_KEY=dummy-local-no-auth
+      - AIDER_MODEL=openai/${AIDER_MODEL_NAME:-Qwen3.5-35B-A3B}
+      - AIDER_NO_AUTO_COMMITS=${AIDER_NO_AUTO_COMMITS:-false}
+      - AIDER_DARK_MODE=true
+      - AIDER_PRETTY=true
+      - GIT_AUTHOR_NAME=aider-bot
+      - GIT_AUTHOR_EMAIL=bot@local
+
+    working_dir: /workspace
+
+    # Interactive TTY for CLI use
+    stdin_open: true
+    tty: true
+
+    # Security: no GPU, no new privs, read-only root except workspace
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ── Sandbox executor (test/build isolation) ──────────────────────────────
+  # NOTE: This is the "robust" config only.
+  # Uncomment to enable. Runs with --network none for complete isolation.
+  # The agent can exec commands here via docker exec or a shared socket.
+  #
+  # sandbox:
+  #   image: ubuntu:24.04   # replace with your build image (e.g., cmake + gcc)
+  #   container_name: llm-sandbox
+  #   restart: "no"
+  #   # NO network - completely isolated
+  #   # Requires separate docker network: none (set via docker run --network none)
+  #   # docker-compose doesn't support network:none directly; use:
+  #   #   docker run --network none ...
+  #   networks: []
+  #   volumes:
+  #     - workspace:/workspace:rw
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   cap_drop:
+  #     - ALL
+  #   mem_limit: 4g
+  #   cpus: 4
+  #   working_dir: /workspace
+  #   command: sleep infinity

@@ -1,0 +1,38 @@
+# Dockerfile.agent
+# aider CLI coding agent - connects to llama-server via internal network
+# No GPU needed
+
+FROM python:3.12-slim-bookworm
+
+ARG AIDER_VERSION=0.85.2
+# Pin version. Check: https://pypi.org/project/aider-chat/#history
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    git-delta \
+    universal-ctags \
+    ripgrep \
+    patch \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install aider at pinned version
+RUN pip install --no-cache-dir "aider-chat==${AIDER_VERSION}"
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash agentuser
+USER agentuser
+WORKDIR /workspace
+
+# Aider config dir
+RUN mkdir -p /home/agentuser/.aider
+
+# Default: drop into interactive shell so user can run aider manually
+# Override CMD in docker-compose or docker run for specific tasks
+CMD ["/bin/bash"]

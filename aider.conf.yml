@@ -1,0 +1,43 @@
+# config/aider.conf.yml
+# aider configuration for local Qwen3.5 via llama-server
+# Reference: https://aider.chat/docs/config/aider_conf.html
+
+# Model config - uses OPENAI_API_BASE env var for endpoint
+model: openai/Qwen3.5-35B-A3B
+
+# Edit format: diff (architect) or whole-file
+# "diff" mode generates unified diffs → cleaner for code review
+edit-format: diff
+
+# Repo-map: helps aider understand the codebase structure
+# Uses ctags/tree-sitter to build symbol map
+map-tokens: 4096       # tokens allocated to repo map
+map-refresh: auto      # refresh when files change
+
+# Context window for this model (set below llama-server ctx-size)
+max-context-tokens: 60000
+
+# Auto-run tests after applying patches
+# Set to your actual test command; override per-session with /test
+# test-cmd: "make test"   # example
+
+# Git integration
+auto-commits: true
+dirty-commits: true
+git: true
+
+# Output
+pretty: true
+dark-mode: true
+stream: true
+
+# System prompt additions for coding style
+# system-prompt: |
+#   You are an expert C++ developer helping with MPLAPACK development.
+#   Focus on numerical precision and correctness over brevity.
+
+# Cache control - reduces repeated tokenization
+cache-prompts: true
+
+# Voice: disabled (offline, no speech API)
+voice-language: disabled
