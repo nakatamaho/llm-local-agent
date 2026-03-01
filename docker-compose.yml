@@ -90,7 +90,7 @@ services:
       --ubatch-size 256
       --n-predict -1
       --threads 8
-      --flash-attn
+      --flash-attn on
       --cache-type-k q8_0
       --cache-type-v q8_0
       --temp ${LLM_TEMPERATURE:-0.6}
