@@ -6,8 +6,6 @@
 name: llm-local-agent
 
 networks:
-  # internal=true: no routing to host's external interfaces
-  # Containers can only reach each other via this network
   llm-internal:
     driver: bridge
     internal: true
@@ -44,6 +42,8 @@ volumes:
       o: bind
       device: ${PROJECT_ROOT:-.}/logs/agent
 
+  webui-data:   # added here, in the single volumes section
+
 services:
   # ── Inference server (llama.cpp with CUDA) ──────────────────────────────
   inference:
@@ -60,7 +60,6 @@ services:
       llm-internal:
         ipv4_address: 172.30.0.10
 
-    # GPU access: all capabilities, device 0 only
     deploy:
       resources:
         reservations:
@@ -70,16 +69,14 @@ services:
               capabilities: [gpu]
 
     volumes:
-      - models:/models:ro            # model files: READ-ONLY
-      - logs-inference:/var/log/llm  # logs: read-write
+      - models:/models:ro
+      - logs-inference:/var/log/llm
 
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # llama-server picks these up if set, but we pass via CMD
       - LLAMA_CTX_SIZE=${LLAMA_CTX_SIZE:-65536}
 
-    # Override CMD to use env vars:
     command: >
       --model /models/${MODEL_FILE:-Qwen3.5-35B-A3B-Q4_K_M.gguf}
       --host 0.0.0.0
@@ -107,10 +104,9 @@ services:
       retries: 5
       start_period: 120s
 
-    # Security hardening
     security_opt:
       - no-new-privileges:true
-    read_only: false   # llama-server needs /tmp; set true + tmpfs if desired
+    read_only: false
     tmpfs:
       - /tmp:size=512m
 
@@ -130,7 +126,7 @@ services:
         AIDER_VERSION: ${AIDER_VERSION:-0.85.2}
     image: llm-local-agent/agent:${AIDER_VERSION:-0.85.2}
     container_name: llm-agent
-    restart: "no"   # run interactively; don't auto-restart
+    restart: "no"
 
     depends_on:
       inference:
@@ -141,13 +137,11 @@ services:
         ipv4_address: 172.30.0.20
 
     volumes:
-      - workspace:/workspace:rw         # target repo: read-write (for patches)
+      - workspace:/workspace:rw
       - logs-agent:/home/agentuser/.aider/logs:rw
-      # Mount aider config (read-only from host)
       - ./config/aider.conf.yml:/home/agentuser/.aider.conf.yml:ro
 
     environment:
-      # Point aider to our local llama-server (OpenAI-compatible)
       - OPENAI_API_BASE=http://172.30.0.10:8080/v1
       - OPENAI_API_KEY=dummy-local-no-auth
       - AIDER_MODEL=openai/${AIDER_MODEL_NAME:-Qwen3.5-35B-A3B}
@@ -158,12 +152,9 @@ services:
       - GIT_AUTHOR_EMAIL=bot@local
 
     working_dir: /workspace
-
-    # Interactive TTY for CLI use
     stdin_open: true
     tty: true
 
-    # Security: no GPU, no new privs, read-only root except workspace
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -175,27 +166,24 @@ services:
         max-size: "50m"
         max-file: "3"
 
-  # ── Sandbox executor (test/build isolation) ──────────────────────────────
-  # NOTE: This is the "robust" config only.
-  # Uncomment to enable. Runs with --network none for complete isolation.
-  # The agent can exec commands here via docker exec or a shared socket.
-  #
-  # sandbox:
-  #   image: ubuntu:24.04   # replace with your build image (e.g., cmake + gcc)
-  #   container_name: llm-sandbox
-  #   restart: "no"
-  #   # NO network - completely isolated
-  #   # Requires separate docker network: none (set via docker run --network none)
-  #   # docker-compose doesn't support network:none directly; use:
-  #   #   docker run --network none ...
-  #   networks: []
-  #   volumes:
-  #     - workspace:/workspace:rw
-  #   security_opt:
-  #     - no-new-privileges:true
-  #   cap_drop:
-  #     - ALL
-  #   mem_limit: 4g
-  #   cpus: 4
-  #   working_dir: /workspace
-  #   command: sleep infinity
+  # ── Web UI (Open WebUI) ──────────────────────────────────────────────────
+  webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: llm-webui
+    restart: unless-stopped
+
+    networks:
+      llm-internal:
+        ipv4_address: 172.30.0.30
+
+    ports:
+      - "3000:8080"
+
+    volumes:
+      - webui-data:/app/backend/data   # persistent storage for webui settings
+
+    environment:
+      - OPENAI_API_BASE_URL=http://172.30.0.10:8080/v1
+      - OPENAI_API_KEY=dummy
+      - WEBUI_AUTH=false
+      - WEBUI_NAME=Local Qwen3.5
