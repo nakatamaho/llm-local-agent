@@ -102,6 +102,8 @@ RUN mkdir -p ~/.emacs.d && cat > ~/.emacs.d/init.el << 'INITEOF'
 ;; ── aider ────────────────────────────────────────────────────────────────────
 (add-to-list 'load-path (expand-file-name "~/.emacs.d/lisp/aider.el"))
 (require 'aider)
+(setenv "NO_COLOR" "1")
+(setenv "TERM" "dumb")
 
 (setq aider-args '("--model" "openai/Qwen3.5-35B-A3B"
                    "--openai-api-base" "http://172.30.0.10:8080/v1"
