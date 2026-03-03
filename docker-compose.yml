@@ -13,6 +13,9 @@ networks:
       config:
         - subnet: 172.30.0.0/24
 
+  llm-external:
+    driver: bridge
+
 volumes:
   models:
     driver: local
@@ -43,6 +46,7 @@ volumes:
       device: ${PROJECT_ROOT:-.}/logs/agent
 
   webui-data:   # added here, in the single volumes section
+  emacs-home:
 
 services:
   # ── Inference server (llama.cpp with CUDA) ──────────────────────────────
@@ -59,6 +63,7 @@ services:
     networks:
       llm-internal:
         ipv4_address: 172.30.0.10
+      llm-external:
 
     deploy:
       resources:
@@ -96,6 +101,9 @@ services:
       --repeat-penalty 1.0
       --no-mmap
       --log-file /var/log/llm/server.log
+
+    ports:
+      - "8080:8080"   # expose to host for Emacs aider.el
 
     healthcheck:
       test: ["CMD-SHELL", "exit 0"]
@@ -187,3 +195,32 @@ services:
       - OPENAI_API_KEY=dummy
       - WEBUI_AUTH=false
       - WEBUI_NAME=Local Qwen3.5
+
+# ── Emacs + aider ────────────────────────────────────────────────────────
+  emacs:
+    build:
+      context: .
+      dockerfile: Dockerfile.emacs
+    image: llm-local-agent/emacs:latest
+    container_name: llm-emacs
+    restart: "no"
+
+    networks:
+      llm-internal:
+        ipv4_address: 172.30.0.40
+
+    volumes:
+      - /work1/gmpxx_mkII:/workspace:rw 
+      - emacs-home:/home/emacsuser/.aider 
+
+    environment:
+      - OPENAI_API_BASE=http://172.30.0.10:8080/v1
+      - OPENAI_API_KEY=dummy
+      - TERM=xterm-256color
+
+    stdin_open: true
+    tty: true
+
+    security_opt:
+      - no-new-privileges:true
+
