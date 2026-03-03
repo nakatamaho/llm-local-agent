@@ -15,7 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     sudo \
     ca-certificates \
+    locales \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
+
+# Generate Japanese locale
+RUN sed -i 's/# ja_JP.UTF-8 UTF-8/ja_JP.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen ja_JP.UTF-8
+
+ENV LANG=ja_JP.UTF-8
+ENV LANGUAGE=ja_JP:ja
+ENV LC_ALL=ja_JP.UTF-8
 
 # Create user - handle pre-existing UID gracefully
 ARG DOCKER_UID=1000
@@ -35,20 +45,20 @@ RUN set -eux; \
     echo "${DOCKER_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"${DOCKER_USER}"; \
     chmod 440 /etc/sudoers.d/"${DOCKER_USER}"
 
-# ---- Switch to non-root user for all subsequent steps ----
+# Switch to non-root user for all subsequent steps
 USER ${DOCKER_USER}
 WORKDIR /home/${DOCKER_USER}
 
 ENV PATH="/home/${DOCKER_USER}/.local/bin:$PATH"
 
-# Install aider via pipx (runs as DOCKER_USER, installs to /home/docker/.local)
+# Install aider via pipx
 RUN pipx install aider-chat==0.85.2
 
 # Install aider.el
 RUN mkdir -p ~/.emacs.d/lisp && \
     git clone https://github.com/tninja/aider.el.git ~/.emacs.d/lisp/aider.el
 
-# Install Emacs packages (runs as DOCKER_USER, installs to /home/docker/.emacs.d/elpa)
+# Install Emacs packages
 RUN emacs --batch \
     --eval "(require 'package)" \
     --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
@@ -58,12 +68,38 @@ RUN emacs --batch \
     --eval "(dolist (pkg '(magit markdown-mode s dash spinner transient with-editor async)) (unless (package-installed-p pkg) (package-install pkg)))" \
     2>&1 | tail -10
 
-# Emacs init - use ${DOCKER_USER} home path
+# Emacs init
 RUN mkdir -p ~/.emacs.d && cat > ~/.emacs.d/init.el << 'INITEOF'
-;; Add pipx/aider to exec-path
+;; ── Path ────────────────────────────────────────────────────────────────────
 (add-to-list 'exec-path (expand-file-name "~/.local/bin"))
 (setenv "PATH" (concat (expand-file-name "~/.local/bin") ":" (getenv "PATH")))
 
+;; ── Japanese support ─────────────────────────────────────────────────────────
+(set-language-environment "Japanese")
+(prefer-coding-system 'utf-8)
+(set-default-coding-systems 'utf-8)
+(set-terminal-coding-system 'utf-8)
+(set-keyboard-coding-system 'utf-8)
+(setenv "LANG" "ja_JP.UTF-8")
+(setenv "LC_ALL" "ja_JP.UTF-8")
+
+;; ── Disable all colors and visual decoration ─────────────────────────────────
+(setq-default font-lock-mode nil)
+(global-font-lock-mode -1)          ; disable syntax highlighting
+(setq font-lock-global-modes nil)
+(when (fboundp 'global-hi-lock-mode) (global-hi-lock-mode -1))
+
+;; Disable colors in shell/comint buffers (where aider runs)
+(setq ansi-color-for-comint-mode 'filter)  ; strip ANSI escape codes
+(add-hook 'shell-mode-hook
+          (lambda () (face-remap-add-relative 'default :foreground "unspecified")))
+(add-hook 'comint-mode-hook
+          (lambda () (setq-local ansi-color-for-comint-mode 'filter)))
+
+;; Strip ANSI codes from aider output
+(add-hook 'comint-output-filter-functions 'ansi-color-process-output)
+
+;; ── aider ────────────────────────────────────────────────────────────────────
 (add-to-list 'load-path (expand-file-name "~/.emacs.d/lisp/aider.el"))
 (require 'aider)
 
@@ -72,6 +108,9 @@ RUN mkdir -p ~/.emacs.d && cat > ~/.emacs.d/init.el << 'INITEOF'
                    "--openai-api-key" "dummy"
                    "--no-check-update"
                    "--no-show-model-warnings"
+                   "--no-show-release-notes"
+                   "--no-fancy-input"
+                   "--no-pretty"
                    "--map-tokens" "1024"
                    "--max-chat-history-tokens" "4096"
                    "--edit-format" "diff"
@@ -81,7 +120,7 @@ RUN mkdir -p ~/.emacs.d && cat > ~/.emacs.d/init.el << 'INITEOF'
 (setenv "OPENAI_API_KEY" "dummy")
 (setenv "OPENAI_API_BASE" "http://172.30.0.10:8080/v1")
 
-;; Key bindings
+;; ── Key bindings ─────────────────────────────────────────────────────────────
 (global-set-key (kbd "C-c a a") 'aider-run-aider)
 (global-set-key (kbd "C-c a f") 'aider-add-current-file)
 (global-set-key (kbd "C-c a q") 'aider-ask)
